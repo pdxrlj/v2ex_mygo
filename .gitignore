@@ -1,0 +1,29 @@
+# Local configuration and secrets
+.env
+
+# Local app data: node cache, screenshots and scratch files
+.mygo/
+.screenshots/
+mygo.db
+cache.db
+
+# Build output
+/bin/
+mygo_demo
+*.exe
+*.test
+*.out
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Coverage and profiling
+*.cover
+*.prof
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
