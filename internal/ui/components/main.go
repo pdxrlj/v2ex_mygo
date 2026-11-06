@@ -24,6 +24,12 @@ type View struct {
 	// to ProxyURL and stores it.
 	ProxyInput string
 
+	// TokenInput is the draft the settings panel edits; ApplyToken copies it
+	// to the API client and stores it.
+	TokenInput string
+	// TokenVisible shows the token input in plain text instead of dots.
+	TokenVisible bool
+
 	Query        string
 	Nav          string // nodes | favorites | profile | settings
 	SelectedNode string
@@ -34,9 +40,6 @@ type View struct {
 	// the window's life and lets ShowToast queue a toast from any method
 	// that runs while the view is building.
 	ctx *ui.Context
-
-	// MessageText is what the message drawer shows; empty, it is closed.
-	MessageText string
 
 	// nodeLayout is the node list's saved arrangement: pinned nodes and the
 	// custom order of the rest. PinListState and NormalListState are its two
@@ -118,6 +121,7 @@ func NewView(client *api.Client, proxyURL string) *View {
 		Profile:       api.NewProfile(client),
 		ProxyURL:      proxyURL,
 		ProxyInput:    proxyURL,
+		TokenInput:    client.Key,
 		nodeLayout:    layout,
 	}
 }
@@ -136,9 +140,6 @@ func (v *View) Draw(c *ui.Context) {
 			v.Detail(c)
 		})
 	})
-
-	// Built last so the drawer shows above the content.
-	v.Message(c)
 }
 
 // CurrentTheme returns the icon of the appearance the app is not in, as the
@@ -249,7 +250,7 @@ func (v *View) loadUser() *api.ProfileResult {
 
 	user, err := v.Profile.Get()
 	if err != nil {
-		v.ShowMessage("获取用户信息失败")
+		v.ShowToast("获取用户信息失败")
 		return nil
 	}
 	v.User = user

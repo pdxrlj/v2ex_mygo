@@ -12,6 +12,11 @@ import (
 // means a direct connection; a missing row means it was never set.
 const ProxyKey = "proxy"
 
+// TokenKey is the setting that holds the V2EX Personal Access Token saved
+// from the settings panel. A missing row means the token comes from the
+// environment or .env file.
+const TokenKey = "token"
+
 // NodeLayoutKey is the setting that holds the node list's saved arrangement:
 // its pinned nodes and the custom order of the rest, as JSON.
 const NodeLayoutKey = "node_layout"

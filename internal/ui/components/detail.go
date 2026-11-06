@@ -171,13 +171,8 @@ func (v *View) nodeHeader(c *ui.Context, n api.AllNodeInfo) {
 				})
 
 			ui.Column(c).Grow(1).Gap(2).Children(func() {
-				ui.Row(c).Gap(8).AlignItems(ui.Center).
-					Children(func() {
-						ui.Text(c, n.Title).FontSize(16).FontWeight(700).
-							TextColor(t.Text).SingleLine()
-						ui.Text(c, "/go/"+n.Name).FontSize(11).
-							TextColor(t.TextMuted).SingleLine()
-					})
+				ui.Text(c, n.Title).FontSize(16).FontWeight(700).
+					TextColor(t.Text).SingleLine()
 			})
 
 			v.favoriteButton(c, n)
@@ -213,7 +208,7 @@ func (v *View) favoriteButton(c *ui.Context, n api.AllNodeInfo) {
 		}).
 		OnClick(func() {
 			if _, err := v.FavoritesRepo.ToggleFavorite(n.Name, n.Title); err != nil {
-				v.ShowMessage("更新收藏失败")
+				v.ShowToast("更新收藏失败")
 				return
 			}
 			v.invalidate()
@@ -236,6 +231,7 @@ func (v *View) topicRow(c *ui.Context, topic api.TopicInfo, author *api.MemberIn
 		Padding(8, 4).
 		Gap(10).
 		AlignItems(ui.Start).
+		Cursor(ui.CursorPointer).
 		Children(func() {
 			if avatarURL != "" {
 				ui.Avatar(c, author.Username,
@@ -480,11 +476,104 @@ func (v *View) settingsPanel(c *ui.Context) {
 			ui.Text(c, "Token、代理与本地数据设置。").FontSize(12).TextColor(t.TextMuted)
 			ui.Box(c).FillWidth().Height(1).Background(t.Border.Alpha(0.25))
 
-			v.settingRow(c, "Token 状态", tokenStatus(v._client.Key))
+			v.tokenSettingRow(c)
 			v.proxySettingRow(c)
 			v.settingRow(c, "节点缓存", v.nodeCacheSummary())
 			v.settingRow(c, "外观", themeName())
 		})
+}
+
+// tokenSettingRow edits the Personal Access Token in place: Enter or 应用
+// stores it and points the API client at it, so the next fetch uses the new
+// account.
+func (v *View) tokenSettingRow(c *ui.Context) {
+	t := c.Theme()
+	ui.Column(c).FillWidth().
+		Padding(10, 12).
+		Radius(8).
+		Background(t.Surface).
+		Gap(6).
+		Children(func() {
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
+				ui.Text(c, "Personal Access Token").FontSize(12).
+					TextColor(t.TextMuted).Grow(1)
+				ui.Text(c, tokenStatus(v._client.Key)).FontSize(11).
+					TextColor(t.TextMuted)
+			})
+
+			ui.Row(c).FillWidth().Gap(8).AlignItems(ui.Center).Children(func() {
+				field := ui.TextInput(c, &v.TokenInput).
+					FontSize(12).
+					Height(32).
+					Padding(4, 8).
+					Placeholder("粘贴 V2EX 的个人访问令牌").
+					Label("Token").
+					Grow(1)
+				if !v.TokenVisible {
+					field = field.Password()
+				}
+				apply := field.Submitted()
+
+				icon := icons.Eye
+				label := "显示 Token"
+				if v.TokenVisible {
+					icon = icons.EyeOff
+					label = "隐藏 Token"
+				}
+				ui.ButtonBase(c).Label(label).
+					Size(32, 32).
+					Radius(6).
+					Center().
+					Cursor(ui.CursorPointer).
+					Background(t.Background).
+					Border(1, t.Border.Alpha(0.4)).
+					Children(func() {
+						ui.Icon(c, icon).FontSize(15).TextColor(t.TextMuted)
+					}).
+					OnClick(func() {
+						v.TokenVisible = !v.TokenVisible
+						v.invalidate()
+					})
+
+				ui.ButtonBase(c).Label("应用 Token").
+					Padding(4, 10).
+					Radius(6).
+					Background(t.Background).
+					Border(1, t.Border.Alpha(0.4)).
+					Children(func() {
+						ui.Text(c, "应用").FontSize(11).TextColor(t.Text)
+					}).
+					OnClick(func() {
+						v.applyToken()
+					})
+
+				if apply {
+					v.applyToken()
+				}
+			})
+		})
+}
+
+// applyToken stores the drafted token and points the API client at it. The
+// cached profile is dropped so the header fetches the new account's details.
+func (v *View) applyToken() {
+	token := strings.TrimSpace(v.TokenInput)
+	if token == "" {
+		v.ShowToast("Token 不能为空")
+		return
+	}
+
+	if err := v.SettingsRepo.Set(repo.TokenKey, token); err != nil {
+		v.ShowToast("保存 Token 失败")
+		return
+	}
+
+	v.TokenInput = token
+	v._client.SetToken(token)
+	v.User = nil
+	v.userLoaded = false
+	v.ShowToast("Token 已更新")
+	v.invalidate()
 }
 
 // proxySettingRow edits the proxy URL in place: Enter or 应用 validates it,
@@ -542,13 +631,13 @@ func (v *View) applyProxy() {
 	if proxy != "" {
 		parsed, err := url.Parse(proxy)
 		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-			v.ShowMessage("代理地址格式不正确，例如 http://127.0.0.1:7890")
+			v.ShowToast("代理地址格式不正确，例如 http://127.0.0.1:7890")
 			return
 		}
 	}
 
 	if err := v.SettingsRepo.Set(repo.ProxyKey, proxy); err != nil {
-		v.ShowMessage("保存代理设置失败")
+		v.ShowToast("保存代理设置失败")
 		return
 	}
 
@@ -558,7 +647,7 @@ func (v *View) applyProxy() {
 	} else {
 		v._client.SetProxy(proxy)
 	}
-	v.ShowMessage("代理已更新")
+	v.ShowToast("代理已更新")
 	v.invalidate()
 }
 

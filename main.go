@@ -44,7 +44,16 @@ func main() {
 	settings := repo.NewSettings(conn)
 
 	proxy := proxyURL(settings)
-	client, err := api.NewClient(proxy)
+
+	// A token saved from the settings panel wins over the environment, so
+	// the app can be set up without editing .env by hand.
+	savedToken, hasToken, tokenErr := settings.Get(repo.TokenKey)
+	var client *api.Client
+	if tokenErr == nil && hasToken && savedToken != "" {
+		client, err = api.NewClientWithToken(savedToken, proxy)
+	} else {
+		client, err = api.NewClient(proxy)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}

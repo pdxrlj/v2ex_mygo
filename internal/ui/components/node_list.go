@@ -271,7 +271,7 @@ func (v *View) favoriteStar(c *ui.Context, n api.AllNodeInfo, icon *ui.SVG, colo
 	}).
 		OnClick(func() {
 			if _, err := v.FavoritesRepo.ToggleFavorite(n.Name, n.Title); err != nil {
-				v.ShowMessage("更新收藏失败")
+				v.ShowToast("更新收藏失败")
 				return
 			}
 			v.invalidate()

@@ -45,6 +45,19 @@ func NewClient(proxy ...string) (*Client, error) {
 		return nil, errors.New("V2EX_TOKEN is not set")
 	}
 
+	return NewClientWithToken(token, proxy...)
+}
+
+// NewClientWithToken returns a V2EX API client authenticated with token, as
+// the settings panel's saved token uses it. An optional proxy URL routes all
+// requests through the proxy.
+func NewClientWithToken(token string, proxy ...string) (*Client, error) {
+	loadEnv()
+
+	if token == "" {
+		return nil, errors.New("V2EX_TOKEN is not set")
+	}
+
 	client := resty.New().
 		SetBaseURL(baseURL).
 		SetRetryCount(3).
@@ -58,6 +71,18 @@ func NewClient(proxy ...string) (*Client, error) {
 	}
 
 	return &Client{Key: token, Client: client, SiteURL: siteURL}, nil
+}
+
+// SetToken replaces the token later requests are authorized with, as the
+// settings panel does when its token is applied. An empty token stops the
+// requests being authorized at all.
+func (c *Client) SetToken(token string) {
+	c.Key = token
+	if token == "" {
+		c.Header.Del("Authorization")
+		return
+	}
+	c.SetHeader("Authorization", "Bearer "+token)
 }
 
 // retryCondition decides whether a failed request is retried. Resty retries

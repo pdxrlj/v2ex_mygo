@@ -215,6 +215,6 @@ func (v *View) reorderNormal(shown []api.AllNodeInfo, rows []int, to int) {
 // shows and tells the user it will be lost.
 func (v *View) persistNodeLayout() {
 	if err := saveNodeLayout(v.SettingsRepo, v.nodeLayout); err != nil {
-		v.ShowMessage("保存节点排序失败")
+		v.ShowToast("保存节点排序失败")
 	}
 }
