@@ -21,6 +21,11 @@ func (v *View) NavSidebar(c *ui.Context) {
 		nodeCount = formatNumber(n)
 	}
 	favoriteCount := formatNumber(v.favoritesCount())
+	unread := unreadNotificationLabel(v.unreadNotifications())
+	subscriptionCount := ""
+	if n, err := v.SubscriptionsRepo.Count(); err == nil && n > 0 {
+		subscriptionCount = formatNumber(n)
+	}
 
 	sidebar := ui.Column(c).FillHeight().
 		Background(t.Surface).
@@ -34,18 +39,22 @@ func (v *View) NavSidebar(c *ui.Context) {
 
 	sidebar.Children(func() {
 		if compact {
-			v.navItem(c, "nodes", "节点列表", icons.Nodes, nodeCount, true)
-			v.navItem(c, "favorites", "收藏节点", icons.Star, favoriteCount, true)
+			v.navItem(c, "nodes", "节点列表", icons.Nodes, nodeCount, false, true)
+			v.navItem(c, "favorites", "收藏节点", icons.Star, favoriteCount, false, true)
+			v.navItem(c, "messages", "消息通知", icons.Bell, unread, unread != "", true)
+			v.navItem(c, "subscriptions", "订阅主题", icons.Bookmark, subscriptionCount, false, true)
 			ui.Box(c).FillWidth().Height(1).Background(t.Border.Alpha(0.25)).MarginY(6)
-			v.navItem(c, "profile", "我的资料", icons.User, "", true)
-			v.navItem(c, "settings", "系统设置", icons.Gear, "", true)
+			v.navItem(c, "profile", "我的资料", icons.User, "", false, true)
+			v.navItem(c, "settings", "系统设置", icons.Gear, "", false, true)
 			return
 		}
 
 		ui.Text(c, "浏览").FontSize(11).FontWeight(600).TextColor(t.TextMuted).Margin(6, 6, 4, 4)
 
-		v.navItem(c, "nodes", "节点列表", icons.Nodes, nodeCount, false)
-		v.navItem(c, "favorites", "收藏节点", icons.Star, favoriteCount, false)
+		v.navItem(c, "nodes", "节点列表", icons.Nodes, nodeCount, false, false)
+		v.navItem(c, "favorites", "收藏节点", icons.Star, favoriteCount, false, false)
+		v.navItem(c, "messages", "消息通知", icons.Bell, unread, unread != "", false)
+		v.navItem(c, "subscriptions", "订阅主题", icons.Bookmark, subscriptionCount, false, false)
 
 		ui.Box(c).Height(14)
 
@@ -53,12 +62,12 @@ func (v *View) NavSidebar(c *ui.Context) {
 			TextColor(t.TextMuted).
 			Margin(6, 6, 4, 4)
 
-		v.navItem(c, "profile", "我的资料", icons.User, "", false)
-		v.navItem(c, "settings", "系统设置", icons.Gear, "", false)
+		v.navItem(c, "profile", "我的资料", icons.User, "", false, false)
+		v.navItem(c, "settings", "系统设置", icons.Gear, "", false, false)
 	})
 }
 
-func (v *View) navItem(c *ui.Context, id, label string, icon *ui.SVG, count string, compact bool) {
+func (v *View) navItem(c *ui.Context, id, label string, icon *ui.SVG, count string, badge, compact bool) {
 	t := c.Theme()
 	selected := v.Nav == id
 	background := ui.Transparent
@@ -76,6 +85,13 @@ func (v *View) navItem(c *ui.Context, id, label string, icon *ui.SVG, count stri
 		Background(background)
 	if compact {
 		item.Height(38).Center().Children(func() {
+			if badge {
+				ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
+					ui.Icon(c, icon).FontSize(18).TextColor(iconColor)
+					ui.Box(c).Size(6, 6).Radius(3).Background(t.Accent)
+				})
+				return
+			}
 			ui.Icon(c, icon).FontSize(18).TextColor(iconColor)
 		})
 	} else {
@@ -83,13 +99,21 @@ func (v *View) navItem(c *ui.Context, id, label string, icon *ui.SVG, count stri
 			ui.Icon(c, icon).FontSize(16).TextColor(iconColor)
 			ui.Text(c, label).FontSize(13).TextColor(foreground).Grow(1).SingleLine()
 			if count != "" {
-				ui.Text(c, count).FontSize(11).TextColor(t.TextMuted)
+				if badge {
+					ui.Box(c).Padding(1, 7).Radius(999).Background(t.Accent).
+						Center().Children(func() {
+						ui.Text(c, count).FontSize(10).FontWeight(600).
+							TextColor(ui.Hex("#FFFFFF"))
+					})
+				} else {
+					ui.Text(c, count).FontSize(11).TextColor(t.TextMuted)
+				}
 			}
 		})
 	}
 
 	item.OnClick(func() {
-		v.Nav = id
+		v.setNav(id)
 		switch id {
 		case "favorites":
 			v.Filter = 1

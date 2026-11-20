@@ -3,6 +3,9 @@ package components
 import (
 	"fmt"
 	"log"
+	"net/url"
+	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,17 +25,20 @@ var topicWindow *mygo.Window
 
 // OpenTopicWindow opens a window showing one topic: its body on top, fixed,
 // and every reply below it, scrolling in the space left.
-func OpenTopicWindow(client *api.Client, proxy string, topic api.TopicInfo) {
+func OpenTopicWindow(v *View, topic api.TopicInfo) {
 	if topicWindow != nil {
 		topicWindow.Close()
 		topicWindow = nil
 	}
 
 	tw := &TopicWindow{
-		client:    client,
-		proxy:     proxy,
+		client:    v._client,
+		proxy:     v.ProxyURL,
+		owner:     v,
 		topicID:   topic.ID,
 		repliesMD: map[int]*markdown.Options{},
+		// The body's pictures load through the app's proxy too.
+		body: markdown.Options{LoadImage: markdownImages(v.ProxyURL)},
 	}
 
 	tw.win = mygo.NewWindow(mygo.WindowOptions{
@@ -64,6 +70,8 @@ type TopicWindow struct {
 	client  *api.Client
 	proxy   string
 	topicID int
+	// owner is the view whose subscription controls the window shows.
+	owner *View
 
 	win *mygo.Window
 
@@ -87,6 +95,14 @@ type TopicWindow struct {
 func (t *TopicWindow) invalidate() {
 	if t.win != nil {
 		t.win.Invalidate()
+	}
+}
+
+// invalidateTopicWindow redraws the open topic window, if any, so its
+// subscription panel shows the state the poll just changed.
+func invalidateTopicWindow() {
+	if topicWindow != nil {
+		topicWindow.Invalidate()
 	}
 }
 
@@ -227,6 +243,8 @@ func (t *TopicWindow) header(c *ui.Context) {
 						topic.Replies, topic.Stars, topic.Thanks)
 				ui.Text(c, meta).FontSize(11).TextColor(th.TextMuted)
 			})
+
+			t.subscriptionHeaderButton(c)
 
 			ui.PrimaryButton(c, "在浏览器打开").OnClick(func() {
 				go mygo.Shell.OpenExternal(topicURL(*topic))
@@ -437,7 +455,7 @@ func (t *TopicWindow) replyRow(c *ui.Context, node replyNode, attached bool) {
 
 	md, ok := t.repliesMD[reply.ID]
 	if !ok {
-		md = &markdown.Options{}
+		md = &markdown.Options{LoadImage: markdownImages(t.proxy)}
 		t.repliesMD[reply.ID] = md
 	}
 
@@ -475,9 +493,85 @@ func (t *TopicWindow) replyRow(c *ui.Context, node replyNode, attached bool) {
 					FontSize(10).TextColor(th.TextMuted)
 			})
 
-			markdown.View(c, node.content, md)
+			t.replyContent(c, node.content, md)
 		})
 	})
+}
+
+// pictureURL matches a bare http(s) address in a reply. Whether it points at
+// a picture is checked after the match.
+var pictureURL = regexp.MustCompile(`https?://[^\s<>"']+`)
+
+// pictureLink is one bare picture address in a reply's text, with where it
+// sits in that text.
+type pictureLink struct {
+	url        string
+	start, end int
+}
+
+// pictureLinks finds the bare addresses in content that name a picture file.
+// Each is loaded in the background; replyContent shows the ones that decode
+// as pictures and leaves the rest in the text.
+func pictureLinks(content string) []pictureLink {
+	var links []pictureLink
+	for _, m := range pictureURL.FindAllStringIndex(content, -1) {
+		// A destination of markdown's own link or image syntax is already
+		// drawn by the markdown view.
+		if m[0] >= 2 && content[m[0]-2:m[0]] == "](" {
+			continue
+		}
+
+		raw := strings.TrimRight(content[m[0]:m[1]],
+			".,;:!?)]}>，。；：！？、）】》」』…")
+		if !isPictureAddress(raw) {
+			continue
+		}
+		links = append(links, pictureLink{url: raw, start: m[0], end: m[0] + len(raw)})
+	}
+	return links
+}
+
+// isPictureAddress reports whether link names a picture file.
+func isPictureAddress(link string) bool {
+	u, err := url.Parse(link)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(path.Ext(u.Path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg":
+		return true
+	}
+	return false
+}
+
+// replyContent draws a reply's text and the pictures it links to: a bare
+// picture address shows its picture below the text once it loads. While it
+// loads, or when it is not a picture after all, the address stays in the
+// text as written.
+func (t *TopicWindow) replyContent(c *ui.Context, content string, md *markdown.Options) {
+	drawn := false
+	start := 0
+	for _, link := range pictureLinks(content) {
+		img := avatarImage(t.proxy, link.url, t.invalidate)
+		if img == nil {
+			continue
+		}
+
+		if text := content[start:link.start]; strings.TrimSpace(text) != "" {
+			markdown.View(c, text, md)
+		}
+		ui.Image(c, img).MaxWidthPercent(100).Radius(8)
+		start = link.end
+		drawn = true
+	}
+
+	if !drawn {
+		markdown.View(c, content, md)
+		return
+	}
+	if tail := content[start:]; strings.TrimSpace(tail) != "" {
+		markdown.View(c, tail, md)
+	}
 }
 
 // replyTag draws a small pill in a reply's meta line, as the poster badge

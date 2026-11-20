@@ -44,6 +44,9 @@ func main() {
 	settings := repo.NewSettings(conn)
 
 	proxy := proxyURL(settings)
+	// WebView2's pages, the login window included, take the same proxy the
+	// API uses; the browser reads this before its first page opens.
+	components.ConfigureWebViewProxy(proxy)
 
 	// A token saved from the settings panel wins over the environment, so
 	// the app can be set up without editing .env by hand.
@@ -90,6 +93,10 @@ func main() {
 			log.Printf("window icon: %v", err)
 		}
 		view.Win = win
+		// The tray keeps the app reachable after its window is hidden.
+		if err := components.SetupTray(view, win); err != nil {
+			log.Printf("tray: %v", err)
+		}
 	})
 	if err := mygo.App.Run(); err != nil {
 		log.Fatal(err)

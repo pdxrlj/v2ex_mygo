@@ -1,14 +1,21 @@
 package components
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 )
+
+// maxAvatarCache caps the decoded pictures kept in memory: a long session
+// scrolling nodes and replies must not grow the cache without end. The
+// oldest go first and are downloaded again if a later frame shows them.
+const maxAvatarCache = 240
 
 // avatars caches node avatars by URL. Decoding happens off the UI thread, so
 // a row draws its fallback icon until the picture is ready; a failed load is
@@ -16,6 +23,7 @@ import (
 var avatars = struct {
 	sync.Mutex
 	images map[string]ui.ImageSource
+	order  []string
 	busy   map[string]bool
 }{images: map[string]ui.ImageSource{}, busy: map[string]bool{}}
 
@@ -87,6 +95,12 @@ func avatarImage(proxyURL string, url string, invalidate func()) ui.ImageSource 
 
 		avatars.Lock()
 		avatars.images[url] = img
+		avatars.order = append(avatars.order, url)
+		for len(avatars.order) > maxAvatarCache {
+			oldest := avatars.order[0]
+			avatars.order = avatars.order[1:]
+			delete(avatars.images, oldest)
+		}
 		delete(avatars.busy, url)
 		avatars.Unlock()
 
@@ -116,7 +130,7 @@ func downloadAvatar(proxyURL string, url string) ui.ImageSource {
 		return nil
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		return nil
 	}
@@ -126,4 +140,34 @@ func downloadAvatar(proxyURL string, url string) ui.ImageSource {
 		return nil
 	}
 	return img
+}
+
+// resolveImageURL makes a picture address in Markdown absolute against the
+// site, for the addresses that come without a scheme.
+func resolveImageURL(raw string) string {
+	link := strings.TrimSpace(raw)
+	switch {
+	case strings.HasPrefix(link, "//"):
+		return "https:" + link
+	case strings.HasPrefix(link, "http://"), strings.HasPrefix(link, "https://"):
+		return link
+	}
+	if !strings.HasPrefix(link, "/") {
+		link = "/" + link
+	}
+	return "https://www.v2ex.com" + link
+}
+
+// markdownImages is a markdown.Options LoadImage that fetches through the
+// app's proxy, so pictures in a topic's body and its replies show as
+// pictures instead of their descriptions.
+func markdownImages(proxyURL string) func(string) (ui.ImageSource, error) {
+	return func(raw string) (ui.ImageSource, error) {
+		link := resolveImageURL(raw)
+		img := downloadAvatar(proxyURL, link)
+		if img == nil {
+			return nil, fmt.Errorf("cannot load image %q", raw)
+		}
+		return img, nil
+	}
 }

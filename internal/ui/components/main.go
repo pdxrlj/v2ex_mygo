@@ -51,6 +51,17 @@ type View struct {
 	FavoritesRepo *repo.Favorites
 	SettingsRepo  *repo.Settings
 
+	// SubscriptionsRepo holds the topics followed for new replies.
+	SubscriptionsRepo *repo.Subscriptions
+
+	// subPollSeconds is the applied subscription check interval, which subMu
+	// guards; subWake wakes the loop when the interval changes or a topic is
+	// subscribed, and subOnce starts it on the first frame.
+	subMu          sync.Mutex
+	subPollSeconds int
+	subWake        chan struct{}
+	subOnce        sync.Once
+
 	Profile *api.Profile
 
 	// User is the token owner's profile, fetched once; userLoaded marks that
@@ -58,10 +69,65 @@ type View struct {
 	User       *api.ProfileResult
 	userLoaded bool
 
+	// NotifPollEnabled is the value the settings panel's switch edits; the
+	// applied schedule the poll reads is below.
+	NotifPollEnabled bool
+
+	// notifPollEnabled and notifPollSeconds are the applied schedule, which
+	// notifMu guards; the poll waits on notifWake while the schedule is off
+	// or after each refresh.
+	notifPollEnabled bool
+	notifPollSeconds int
+	notifWake        chan struct{}
+
+	// webCookie is the decrypted V2EX web session, and the fields around it
+	// hold what the settings card shows while the background requests run;
+	// webMu guards them. webEpoch changes when the session is replaced or
+	// dropped, so a request of the old session cannot write its result.
+	webMu       sync.Mutex
+	webCookie   string
+	webBalance  string
+	webBusy     bool
+	webNotice   string
+	webNoticeOK bool
+	webEpoch    int
+	// webBalanceRequested marks that the balance was asked for once, so the
+	// profile page does not retry it every frame.
+	webBalanceRequested bool
+	// webProxy is the proxy the background check-in uses, kept in step with
+	// ProxyURL by the settings panel.
+	webProxy string
+
+	// AutoSignIn is the settings switch for the daily bonus check-in;
+	// autoSignInOn is the same setting for the background loop, which
+	// webMu guards.
+	AutoSignIn   bool
+	autoSignInOn bool
+	// webOnce starts the automatic check-in loop on the first frame.
+	webOnce sync.Once
+
 	// nodeTopics caches each node's topic list so the detail panel does not
 	// refetch it every frame, and keeps the paging state per node.
 	nodeTopics  map[string]*nodeTopicList
 	TopicScroll ui.ScrollState
+
+	// notifications is the newest page of the member's reminders, filled by
+	// the background poll; notifMu guards it while the poll runs and the
+	// frame draws it.
+	notifMu       sync.Mutex
+	notifications []api.Notification
+	notifErr      string
+	notifLoading  bool
+	notifLoaded   bool
+
+	// notifSeenID is the newest reminder id the member has read. It is saved
+	// locally, so reminders newer than it count as unread across starts.
+	// notifSeenSet tells a saved id from the first run: on the first run the
+	// reminders already on the site count as read, not as a flood of unread.
+	notifSeenID  int
+	notifSeenSet bool
+	// notifOnce starts the poll on the first frame, and not again after.
+	notifOnce sync.Once
 
 	// allNodes caches the whole node listing, which backs the node list,
 	// its search and the "全部" count; allNodesLoaded marks that the fetch
@@ -110,19 +176,37 @@ func NewView(client *api.Client, proxyURL string) *View {
 	}
 	favoritesRepo := repo.NewFavorites(conn)
 	settingsRepo := repo.NewSettings(conn)
+	subscriptionsRepo := repo.NewSubscriptions(conn)
 	layout := loadNodeLayout(settingsRepo)
+	notifSeen, notifSeenSet := loadNotificationsSeen(settingsRepo)
+	pollEnabled, pollSeconds := loadNotificationPollSettings(settingsRepo)
+	webCookie, autoSignIn := loadWebSettings(settingsRepo)
+	subPollSeconds := loadSubscriptionPollInterval(settingsRepo)
 
 	return &View{
-		_client:       client,
-		Nav:           "nodes",
-		SelectedNode:  "",
-		FavoritesRepo: favoritesRepo,
-		SettingsRepo:  settingsRepo,
-		Profile:       api.NewProfile(client),
-		ProxyURL:      proxyURL,
-		ProxyInput:    proxyURL,
-		TokenInput:    client.Key,
-		nodeLayout:    layout,
+		_client:           client,
+		Nav:               "nodes",
+		SelectedNode:      "",
+		FavoritesRepo:     favoritesRepo,
+		SettingsRepo:      settingsRepo,
+		SubscriptionsRepo: subscriptionsRepo,
+		Profile:           api.NewProfile(client),
+		ProxyURL:          proxyURL,
+		ProxyInput:        proxyURL,
+		TokenInput:        client.Key,
+		nodeLayout:        layout,
+		notifSeenID:       notifSeen,
+		notifSeenSet:      notifSeenSet,
+		NotifPollEnabled:  pollEnabled,
+		notifPollEnabled:  pollEnabled,
+		notifPollSeconds:  pollSeconds,
+		notifWake:         make(chan struct{}, 1),
+		webCookie:         webCookie,
+		AutoSignIn:        autoSignIn,
+		autoSignInOn:      autoSignIn,
+		webProxy:          proxyURL,
+		subPollSeconds:    subPollSeconds,
+		subWake:           make(chan struct{}, 1),
 	}
 }
 
@@ -130,9 +214,16 @@ func NewView(client *api.Client, proxyURL string) *View {
 // node list and the detail, side by side.
 func (v *View) Draw(c *ui.Context) {
 	v.ctx = c
+	v.notifOnce.Do(func() { go v.pollNotifications() })
+	v.webOnce.Do(func() { go v.autoSignInLoop() })
+	v.subOnce.Do(func() { go v.pollSubscriptions() })
 	t := c.Theme()
 	ui.Column(c).Fill().Background(t.Surface).Children(func() {
 		v.NavComments(c)
+
+		// A hairline separates the header from what it heads, just enough to
+		// read as one edge.
+		ui.Box(c).FillWidth().Height(1).Background(t.Border.Alpha(0.2))
 
 		ui.Row(c).FillWidth().Grow(1).AlignItems(ui.Stretch).Children(func() {
 			v.NavSidebar(c)
@@ -164,6 +255,10 @@ func (v *View) navTitle() string {
 		return "我的资料"
 	case "settings":
 		return "系统设置"
+	case "messages":
+		return "消息通知"
+	case "subscriptions":
+		return "订阅主题"
 	}
 	return "热门主题"
 }
@@ -282,6 +377,39 @@ func (v *View) nodeTopicList(nodeName string) *nodeTopicList {
 		go v.fetchNodeTopics(nodeName, list, 1)
 	}
 	return list
+}
+
+// refreshNodeTopics drops the cached topic list of nodeName and fetches its
+// first page again, so the detail shows the network's copy instead of the
+// cached one.
+func (v *View) refreshNodeTopics(nodeName string) {
+	if nodeName == "" {
+		return
+	}
+	if v.nodeTopics == nil {
+		v.nodeTopics = map[string]*nodeTopicList{}
+	}
+	list, ok := v.nodeTopics[nodeName]
+	if !ok {
+		list = &nodeTopicList{}
+		v.nodeTopics[nodeName] = list
+	}
+
+	list.loaded = true
+	list.requested = false
+	list.mu.Lock()
+	list.topics = nil
+	list.authors = nil
+	list.page = 0
+	list.pages = 0
+	list.loadErr = ""
+	list.loading = true
+	list.mu.Unlock()
+
+	// The refreshed list starts from the top, as a new node's list does.
+	v.TopicScroll.X, v.TopicScroll.Y = 0, 0
+	go v.fetchNodeTopics(nodeName, list, 1)
+	v.invalidate()
 }
 
 // fetchNodeTopics loads one page into list in the background, replacing it

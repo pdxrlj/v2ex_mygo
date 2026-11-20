@@ -153,9 +153,9 @@ func (v *View) filterButton(c *ui.Context, label string, filter int) {
 	button.OnClick(func() {
 		v.Filter = filter
 		if filter == 1 {
-			v.Nav = "favorites"
+			v.setNav("favorites")
 		} else {
-			v.Nav = "nodes"
+			v.setNav("nodes")
 		}
 		v.invalidate()
 	})
@@ -220,7 +220,7 @@ func (v *View) nodeRow(c *ui.Context, n api.AllNodeInfo) {
 				v.TopicScroll.X, v.TopicScroll.Y = 0, 0
 			}
 			v.SelectedNode = n.Name
-			v.Nav = "nodes"
+			v.setNav("nodes")
 			v.Filter = 0
 			v.invalidate()
 		})

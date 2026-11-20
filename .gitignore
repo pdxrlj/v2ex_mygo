@@ -27,3 +27,4 @@ go.work.sum
 .idea/
 .DS_Store
 Thumbs.db
+rsrc_windows_amd64.syso

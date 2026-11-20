@@ -28,6 +28,32 @@ CREATE TABLE IF NOT EXISTS settings (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+	topic_id     INTEGER PRIMARY KEY,
+	topic_title  TEXT NOT NULL DEFAULT '',
+	last_replies INTEGER NOT NULL DEFAULT 0,
+	created_at   INTEGER NOT NULL,
+	checked_at   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS subscriptions_created_at ON subscriptions (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS subscription_notifications (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	topic_id      INTEGER NOT NULL,
+	topic_title   TEXT NOT NULL DEFAULT '',
+	new_replies   INTEGER NOT NULL DEFAULT 0,
+	total_replies INTEGER NOT NULL DEFAULT 0,
+	last_reply_by TEXT NOT NULL DEFAULT '',
+	created_at    INTEGER NOT NULL,
+	read          INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS subscription_notifications_created_at
+	ON subscription_notifications (created_at DESC);
+CREATE INDEX IF NOT EXISTS subscription_notifications_topic
+	ON subscription_notifications (topic_id);
 `
 
 var (

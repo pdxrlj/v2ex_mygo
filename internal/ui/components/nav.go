@@ -17,7 +17,6 @@ func (v *View) NavComments(c *ui.Context) {
 		Background(t.Surface).
 		DragWindow().
 		Children(func() {
-			v.windowControls(c)
 
 			ui.Image(c, img.Logo).Size(24, 24).Fit(ui.Contain)
 			ui.Text(c, "V2EX").FontSize(14).FontWeight(700).TextColor(t.Text)
@@ -40,19 +39,21 @@ func (v *View) NavComments(c *ui.Context) {
 				}
 			})
 
-			v.headerButton(c, icons.Gear, "设置", func() {
-				v.Nav = "settings"
-				v.invalidate()
-			})
+			// v.headerButton(c, icons.Gear, "设置", func() {
+			// 	v.Nav = "settings"
+			// 	v.invalidate()
+			// })
 
 			ui.ButtonBase(c).Label("账户").Size(28, 28).Radius(999).
 				Children(func() {
 					v.userAvatar(c)
 				}).
 				OnClick(func() {
-					v.Nav = "profile"
+					v.setNav("profile")
 					v.invalidate()
 				})
+
+			v.windowControls(c)
 		})
 }
 

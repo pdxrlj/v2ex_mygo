@@ -28,6 +28,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Generate Windows icon resource
+        shell: pwsh
+        run: go run github.com/akavel/rsrc@v0.10.2 -ico assets/img/app.ico -o rsrc_windows_amd64.syso
+
       - name: Build Windows executable
         shell: pwsh
         env:

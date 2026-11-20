@@ -21,6 +21,33 @@ const TokenKey = "token"
 // its pinned nodes and the custom order of the rest, as JSON.
 const NodeLayoutKey = "node_layout"
 
+// NotificationsSeenKey is the setting that holds the newest reminder id the
+// member has read; reminders newer than it count as unread.
+const NotificationsSeenKey = "notifications_seen"
+
+// NotificationsPollKey turns the scheduled reminder refresh on ("1") or off
+// ("0").
+const NotificationsPollKey = "notifications_poll"
+
+// NotificationsPollIntervalKey is the setting that holds how often the
+// scheduled refresh reads the reminders, in seconds.
+const NotificationsPollIntervalKey = "notifications_poll_interval"
+
+// WebCookieKey is the setting that holds the V2EX web session cookie, DPAPI
+// encrypted and base64 encoded.
+const WebCookieKey = "web_cookie"
+
+// AutoSignInKey turns the daily bonus check-in on ("1") or off ("0").
+const AutoSignInKey = "auto_sign_in"
+
+// LastSignInKey is the day the daily bonus was last claimed, as YYYY-MM-DD,
+// so the automatic check-in runs once a day.
+const LastSignInKey = "last_sign_in"
+
+// SubscriptionPollIntervalKey is the setting that holds how often the
+// subscribed topics are checked for new replies, in seconds.
+const SubscriptionPollIntervalKey = "subscription_poll_interval"
+
 // Settings is the repository of the app's small key-value settings.
 type Settings struct {
 	db *sql.DB

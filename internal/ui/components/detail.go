@@ -31,6 +31,16 @@ func (v *View) Detail(c *ui.Context) {
 				}
 			})
 		})
+	case "messages", "subscriptions":
+		ui.Scroll(c).Grow(1).FillHeight().Children(func() {
+			ui.Column(c).FillWidth().Padding(20).Gap(14).Background(t.Surface).Children(func() {
+				if v.Nav == "messages" {
+					v.notificationsPanel(c)
+				} else {
+					v.subscriptionsPanel(c)
+				}
+			})
+		})
 	default:
 		// The node detail fills the column instead of scrolling as a whole:
 		// its header keeps its size and the topic list takes the rest. No
@@ -175,7 +185,28 @@ func (v *View) nodeHeader(c *ui.Context, n api.AllNodeInfo) {
 					TextColor(t.Text).SingleLine()
 			})
 
+			v.refreshButton(c, n)
 			v.favoriteButton(c, n)
+		})
+}
+
+// refreshButton drops the node's cached topics and loads them again from the
+// network, so the detail shows the current list.
+func (v *View) refreshButton(c *ui.Context, n api.AllNodeInfo) {
+	t := c.Theme()
+	button := ui.ButtonBase(c).Label("刷新节点").
+		Size(28, 28).
+		Radius(6).
+		Center().
+		Cursor(ui.CursorPointer)
+	if button.Hovered() {
+		button.Background(t.Accent.Alpha(0.08))
+	}
+	button.Children(func() {
+		ui.Icon(c, icons.Refresh).FontSize(14).TextColor(t.TextMuted)
+	}).
+		OnClick(func() {
+			v.refreshNodeTopics(n.Name)
 		})
 }
 
@@ -267,7 +298,7 @@ func (v *View) topicRow(c *ui.Context, topic api.TopicInfo, author *api.MemberIn
 			})
 		}).
 		OnClick(func() {
-			OpenTopicWindow(v._client, v.ProxyURL, topic)
+			OpenTopicWindow(v, topic)
 		})
 }
 
@@ -358,8 +389,15 @@ func (v *View) profilePanel(c *ui.Context) {
 }
 
 // profileInfo lists the fields the member endpoint returns, skipping the
-// ones the account left empty. Links open in the default browser.
+// ones the account left empty. Links open in the default browser. The coin
+// balance comes from the web login, so it shows only while that is signed
+// in.
 func (v *View) profileInfo(c *ui.Context, user *api.ProfileResult) {
+	if cookie, _, _, _, _ := v.webSnapshot(); cookie != "" {
+		v.maybeRefreshWebBalanceForProfile()
+	}
+	cookie, balance, busy, _, _ := v.webSnapshot()
+
 	ui.Column(c).FillWidth().Gap(6).Children(func() {
 		v.profileRow(c, "用户 ID", strconv.Itoa(user.ID), "")
 		if user.Location != "" {
@@ -379,6 +417,17 @@ func (v *View) profileInfo(c *ui.Context, user *api.ProfileResult) {
 		}
 		if user.BTC != nil && *user.BTC != "" {
 			v.profileRow(c, "BTC", *user.BTC, "")
+		}
+		if cookie != "" {
+			value := balance
+			switch {
+			case value != "":
+			case busy:
+				value = "获取中…"
+			default:
+				value = "—"
+			}
+			v.profileRow(c, "金币余额", value, "")
 		}
 		v.profileRow(c, "账号状态", profileStatus(user), "")
 		v.profileRow(c, "资料更新", formatDate(user.LastModified), "")
@@ -473,11 +522,14 @@ func (v *View) settingsPanel(c *ui.Context) {
 		Gap(14).
 		Children(func() {
 			ui.Text(c, "系统设置").FontSize(20).FontWeight(700).TextColor(t.Text)
-			ui.Text(c, "Token、代理与本地数据设置。").FontSize(12).TextColor(t.TextMuted)
+			ui.Text(c, "Token、网页登录、代理、通知与本地数据设置。").FontSize(12).TextColor(t.TextMuted)
 			ui.Box(c).FillWidth().Height(1).Background(t.Border.Alpha(0.25))
 
 			v.tokenSettingRow(c)
+			v.webSessionCard(c)
 			v.proxySettingRow(c)
+			v.notificationPollSettingRow(c)
+			v.subscriptionSettingRow(c)
 			v.settingRow(c, "节点缓存", v.nodeCacheSummary())
 			v.settingRow(c, "外观", themeName())
 		})
@@ -572,6 +624,17 @@ func (v *View) applyToken() {
 	v._client.SetToken(token)
 	v.User = nil
 	v.userLoaded = false
+	// Another account's reminders are not the previous ones: drop the list,
+	// start unread from scratch and fetch the new account's reminders now.
+	v.notifMu.Lock()
+	v.notifications = nil
+	v.notifLoaded = false
+	v.notifErr = ""
+	v.notifSeenID = 0
+	v.notifSeenSet = false
+	v.notifMu.Unlock()
+	_ = v.SettingsRepo.Set(repo.NotificationsSeenKey, "0")
+	go v.fetchNotifications()
 	v.ShowToast("Token 已更新")
 	v.invalidate()
 }
@@ -642,12 +705,21 @@ func (v *View) applyProxy() {
 	}
 
 	v.ProxyURL = proxy
+	v.webMu.Lock()
+	v.webProxy = proxy
+	v.webMu.Unlock()
+	ConfigureWebViewProxy(proxy)
 	if proxy == "" {
 		v._client.RemoveProxy()
 	} else {
 		v._client.SetProxy(proxy)
 	}
-	v.ShowToast("代理已更新")
+	if webLoginStarted {
+		// The WebView2 browser read the proxy when its environment started.
+		v.ShowToast("代理已更新（网页登录需重启应用后生效）")
+	} else {
+		v.ShowToast("代理已更新")
+	}
 	v.invalidate()
 }
 
