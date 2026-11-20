@@ -1,6 +1,6 @@
 # V2EX Desktop
 
-一个使用 Go + [MyGo](https://github.com/egoist/mygo) 原生 UI 编写的 V2EX 桌面客户端，面向 Windows。
+一个面向 Windows 的 V2EX 桌面客户端，使用 Go + [MyGo](https://github.com/egoist/mygo) 原生 UI 编写。绿色版，无需安装，支持深色/浅色外观。
 
 [![Release](https://img.shields.io/github/v/release/pdxrlj/v2ex_mygo?label=release)](https://github.com/pdxrlj/v2ex_mygo/releases/latest)
 
@@ -9,73 +9,83 @@
 | 主界面 | 主题详情 |
 | --- | --- |
 | ![主界面](docs/screenshots/main.png) | ![主题详情](docs/screenshots/topic.png) |
-| **收藏节点** | **个人资料** |
-| ![收藏节点](docs/screenshots/favorites.png) | ![个人资料](docs/screenshots/profile.png) |
-| **系统设置** | **深色模式** |
-| ![系统设置](docs/screenshots/settings.png) | ![深色模式](docs/screenshots/dark.png) |
 
 ## 功能
 
-- **节点列表**：全站节点、搜索（名称 / 标题 / 别名）、按主题数排序
-- **置顶与排序**：置顶常用节点，拖动调整节点顺序，布局保存在本地
-- **收藏节点**：收藏 / 取消收藏，侧边栏「收藏」视图只显示收藏的节点
-- **最新主题**：选中节点后展示最新主题、发帖人、回复数与最后回复，滚动到底自动加载下一页
-- **主题详情**：独立窗口阅读主题正文与全部回复，自动加载后续分页
-- **回复楼层**：按 `@` 提及关系把回复归组、缩进，长主题也能顺着对话读
-- **个人资料**：查看当前 Token 对应账号的资料，网页链接可直接用浏览器打开
-- **系统设置**：Token 状态、代理地址在线修改、节点缓存信息、深浅色外观切换
-- **本地存储**：使用 SQLite 保存收藏、设置与节点布局；节点列表带本地缓存
+- 浏览全站节点，搜索、置顶、拖动排序、收藏节点
+- 查看节点最新主题，滚动自动加载下一页
+- 独立窗口阅读主题正文与全部回复，支持图片显示、`@` 回复分组
+- 消息通知：V2EX 站内提醒（回复你、@ 你、感谢你等），带未读角标
+- 订阅主题：最多 5 个，有新回复时右下角弹窗提醒
+- 网页登录后可签到、查看金币余额，并支持每日自动签到
+- 系统托盘：关闭主窗口后继续在后台运行
+- 深色/浅色外观、代理设置、本地缓存
 
-## 下载使用
+## 下载与运行
 
-1. 打开 [Releases](https://github.com/pdxrlj/v2ex_mygo/releases/latest) 下载最新的 `v2ex_mygo.exe`（Windows 10/11 x64，绿色版，无需安装）。
+1. 打开 [Releases](https://github.com/pdxrlj/v2ex_mygo/releases/latest)，下载最新的 `v2ex_mygo.exe`（Windows 10/11 x64）。
 2. 在 [V2EX → 设置 → Token](https://v2ex.com/settings/tokens) 创建一个 Personal Access Token。
-3. 首次运行前，在 `v2ex_mygo.exe` 同目录新建 `.env` 文件：
+3. 配置 Token，任选一种：
+   - 在 exe 同目录新建 `.env`：
 
-   ```ini
-   V2EX_TOKEN=你的令牌
-   ```
+     ```ini
+     V2EX_TOKEN=你的令牌
+     ```
 
-   也可以直接设置同名的系统环境变量，环境变量优先于 `.env`。
-4. 双击运行。之后可以在「系统设置 → Personal Access Token」中修改令牌，点击「应用」后会保存到本地数据库，下次启动优先使用保存的值。
-5. 程序默认使用本地代理 `http://127.0.0.1:7890`，可在「系统设置 → 代理地址」中修改；留空表示直连。也支持 `HTTPS_PROXY` / `HTTP_PROXY` 环境变量。
+   - 设置系统环境变量 `V2EX_TOKEN`
+   - 启动后在「系统设置 → Personal Access Token」中粘贴并点「应用」
+4. 配置代理：默认使用 `http://127.0.0.1:7890`，可在「系统设置 → 代理地址」中修改；留空表示直连。
+5. 双击 `v2ex_mygo.exe` 运行。
 
-> 客户端目前只做浏览，不包含发帖和回复功能（V2EX 的创建回复 API 仅对 PRO 会员开放）。
+> 网页登录/签到功能需要系统安装 WebView2 Runtime；正常安装过 Edge 的 Windows 10/11 一般已自带。
 
-## 本地开发
+## 使用说明
 
-需要 Go 1.27 或更高版本。
+### 消息通知与订阅通知
 
-```sh
-make run     # 等同于 go run main.go
-make build   # 生成 bin/v2ex_mygo.exe
-```
+| 类型 | 内容 | 入口 |
+| --- | --- | --- |
+| 消息通知 | V2EX 站内提醒：有人回复你、@ 你、感谢你等 | 侧边栏「消息通知」 |
+| 订阅通知 | 你订阅的主题出现了新回复 | 侧边栏「订阅主题」→「查看订阅通知」 |
 
-也可以直接使用 Go 命令：
+消息通知的自动刷新可以在「系统设置 → 定时刷新通知」中开关，并调整刷新间隔。
 
-```sh
-go build -o bin/v2ex_mygo.exe .
-```
+### 订阅主题
 
-## 发布
+1. 打开任意主题，点右上角「在浏览器打开」左边的「订阅」
+2. 最多同时订阅 5 个主题，第 6 个会提示先取消一个
+3. 后台默认每 30 分钟检查一次，可在设置中改为 5 / 10 / 15 / 30 / 60 分钟
+4. 有新回复时，屏幕右下角弹出通知卡片：
+   - 「查看详情」打开主题
+   - 「去除通知」关闭弹窗
+   - 12 秒后自动消失
+5. 在侧边栏「订阅主题」中可查看全部订阅、打开主题或取消订阅
 
-推送 `v*` 标签会触发 [Release 工作流](.github/workflows/release.yml)，自动编译 Windows 可执行文件并上传到 GitHub Release：
+订阅检查只在应用运行时进行。
 
-```sh
-git tag v1.0.0
-git push origin v1.0.0
-```
+### 网页登录、签到与余额
 
-也可以在 Actions 页面手动运行该工作流，填入要发布的版本标签（例如 `v1.0.0`）。
+1. 进入「系统设置 → V2EX 网页登录」，点「网页登录」
+2. 在窗口内完成账号密码和验证码登录，成功后窗口自动关闭
+3. 回到设置页即可「签到」「刷新余额」
+4. 需要每天自动领取奖励时，打开「每日自动签到」
 
-## 技术栈
+登录 Cookie 使用 Windows DPAPI 加密后保存在本机，只有当前 Windows 用户能解密。网页登录与 Token 是两套独立的登录方式，余额来自网页登录的账号。
 
-- [Go](https://go.dev/) + [MyGo](https://github.com/egoist/mygo) 原生桌面 UI
-- [resty](https://github.com/go-resty/resty) 调用 V2EX API 2.0
-- [modernc.org/sqlite](https://modernc.org/sqlite) 纯 Go 的 SQLite 驱动
-- [godotenv](https://github.com/joho/godotenv) 读取 `.env`
+### 系统托盘
 
-## 说明
+关闭主窗口会隐藏到托盘，应用继续在后台检查订阅和通知：
 
-- 所有数据来自 V2EX 官方 API，Token 只保存在本地的 `.env` 或环境变量中。
-- 节点缓存默认保留 6 小时，可在「系统设置」中查看缓存概况。
+- 左键点击托盘图标：恢复主窗口
+- 右键菜单：显示主窗口 / 订阅通知 / 订阅主题 / 系统设置 / 退出 V2EX
+- 彻底退出请使用托盘菜单的「退出 V2EX」
+
+## 注意事项
+
+- 客户端只做浏览，不包含发帖和回复功能
+- 消息通知、订阅检查、自动签到都要求应用保持运行
+- V2EX API 默认限制为每个 IP 每小时 600 次请求，默认设置远低于该额度
+- 网页登录 Cookie 等同于账号登录凭证，请不要把本机数据库文件交给他人
+- 自动签到属于网页自动化操作，请自行评估账号风险
+- 订阅通知的右下角弹窗是应用内提示，不会进入 Windows 通知中心
+- 本程序与 V2EX 官方无关
