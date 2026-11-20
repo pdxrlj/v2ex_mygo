@@ -48,6 +48,10 @@ const LastSignInKey = "last_sign_in"
 // subscribed topics are checked for new replies, in seconds.
 const SubscriptionPollIntervalKey = "subscription_poll_interval"
 
+// TopicSplitKey is the setting that holds the topic window's divider
+// position: the percentage of the width the topic pane takes.
+const TopicSplitKey = "topic_split"
+
 // Settings is the repository of the app's small key-value settings.
 type Settings struct {
 	db *sql.DB

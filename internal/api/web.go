@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -33,6 +34,16 @@ var (
 	balanceCoinPattern = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*<img[^>]+alt="([BGS])"`)
 	// balanceCellPattern finds the total of the older table layout.
 	balanceCellPattern = regexp.MustCompile(`<td class="d" style="text-align: right;">(\d+(?:\.\d+)?)</td>`)
+	// replyOnceInputPattern finds the reply form's hidden once input. The
+	// site writes its attributes in varying orders, sometimes with the id
+	// between the value and the name.
+	replyOnceInputPattern = regexp.MustCompile(`<input[^>]*\sname="once"[^>]*>`)
+	// inputValuePattern finds the value of such an input.
+	inputValuePattern = regexp.MustCompile(`\svalue="(\d+)"`)
+	// problemPattern finds the site's error message on a failed reply.
+	problemPattern = regexp.MustCompile(`(?s)<div class="problem">(.*?)</div>`)
+	// tagPattern strips the tags of that message.
+	tagPattern = regexp.MustCompile(`<[^>]*>`)
 )
 
 // WebSession is a session on the V2EX web pages, signed in by the cookies a
@@ -139,6 +150,60 @@ func (w *WebSession) Balance() (string, error) {
 	return balance, nil
 }
 
+// Reply posts a reply to a topic through the site's reply form, which needs
+// the page's one-time code as well as the cookie.
+func (w *WebSession) Reply(topicID int, content string) error {
+	content = strings.TrimSpace(content)
+	if topicID < 1 {
+		return fmt.Errorf("invalid topic id: %d", topicID)
+	}
+	if content == "" {
+		return errors.New("回复内容不能为空")
+	}
+
+	page := siteURL + "/t/" + strconv.Itoa(topicID)
+	resp, err := w.get(page, "")
+	if err != nil {
+		return err
+	}
+	if w.signedOut(resp) {
+		return ErrWebSignedOut
+	}
+
+	once := parseReplyOnce(resp.String())
+	if once == "" {
+		return errors.New("未找到回复入口，请确认登录状态和账号权限")
+	}
+
+	resp, err = w.client.R().
+		SetHeader("Referer", page).
+		SetFormData(map[string]string{
+			"once":    once,
+			"content": content,
+		}).
+		Post(page)
+	if err != nil {
+		return err
+	}
+	if w.signedOut(resp) {
+		return ErrWebSignedOut
+	}
+	if resp.IsError() {
+		return fmt.Errorf("v2ex web error: %s", resp.Status())
+	}
+
+	// A failed post keeps the page with a problem box; a successful one
+	// redirects back to the topic without one.
+	if m := problemPattern.FindStringSubmatch(resp.String()); len(m) == 2 {
+		msg := strings.TrimSpace(tagPattern.ReplaceAllString(m[1], ""))
+		if msg == "" {
+			msg = "回复失败"
+		}
+		return errors.New(msg)
+	}
+	return nil
+}
+
 // get reads a page of the site, with an optional referer the site checks.
 func (w *WebSession) get(path, referer string) (*resty.Response, error) {
 	req := w.client.R()
@@ -159,6 +224,19 @@ func (w *WebSession) signedOut(resp *resty.Response) bool {
 		}
 	}
 	return strings.Contains(resp.String(), "你要查看的页面需要先登录")
+}
+
+// parseReplyOnce returns the one-time code of the page's reply form, or ""
+// when the page has none, as a signed-out one does.
+func parseReplyOnce(html string) string {
+	input := replyOnceInputPattern.FindString(html)
+	if input == "" {
+		return ""
+	}
+	if m := inputValuePattern.FindStringSubmatch(input); len(m) == 2 {
+		return m[1]
+	}
+	return ""
 }
 
 // parseCookieHeader turns "name=value; other=value" into cookies.

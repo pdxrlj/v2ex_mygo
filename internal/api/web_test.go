@@ -29,6 +29,24 @@ func TestParseBalanceHTMLNone(t *testing.T) {
 	}
 }
 
+// TestParseReplyOnce checks the reply form's one-time code, whose attributes
+// the site writes in varying orders.
+func TestParseReplyOnce(t *testing.T) {
+	forms := []string{
+		`<input type="hidden" value="88992" id="once" name="once" />`,
+		`<input type="hidden" name="once" value="88992" />`,
+		`<input name="once" value="88992" type="hidden">`,
+	}
+	for _, html := range forms {
+		if got := parseReplyOnce(html); got != "88992" {
+			t.Errorf("parseReplyOnce(%q) = %q, want 88992", html, got)
+		}
+	}
+	if got := parseReplyOnce(`<input name="other" value="1">`); got != "" {
+		t.Errorf("parseReplyOnce(no once) = %q, want empty", got)
+	}
+}
+
 // TestParseCookieHeader checks that a saved Cookie header becomes cookies,
 // values with an "=" included, and that RFC 6265 quotes are stripped.
 func TestParseCookieHeader(t *testing.T) {

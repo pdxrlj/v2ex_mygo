@@ -31,7 +31,7 @@ func (v *View) NavComments(c *ui.Context) {
 
 			ui.Spacer(c)
 
-			v.headerButton(c, v.CurrentTheme(), "切换外观", func() {
+			headerButton(c, v.CurrentTheme(), "切换外观", func() {
 				if mygo.Theme.IsDark() {
 					mygo.Theme.SetSource(mygo.ThemeLight)
 				} else {
@@ -53,7 +53,7 @@ func (v *View) NavComments(c *ui.Context) {
 					v.invalidate()
 				})
 
-			v.windowControls(c)
+			windowControls(c, v.Win)
 		})
 }
 
@@ -73,30 +73,30 @@ func (v *View) userAvatar(c *ui.Context) {
 	ui.Avatar(c, user.Username, nil).Size(28, 28)
 }
 
-// windowControls draws the minimize, maximize and close buttons the page
+// windowControls draws the minimize, maximize and close buttons a window
 // owns, since the system's are hidden.
-func (v *View) windowControls(c *ui.Context) {
+func windowControls(c *ui.Context, win *mygo.Window) {
 	ui.Row(c).Gap(4).AlignItems(ui.Center).
 		Children(func() {
-			v.windowButton(c, icons.Minimize, "最小化", func() {
-				if v.Win != nil {
-					v.Win.Minimize()
+			windowButton(c, icons.Minimize, "最小化", func() {
+				if win != nil {
+					win.Minimize()
 				}
 			})
-			v.windowButton(c, icons.Maximize, "最大化", func() {
-				if v.Win != nil {
-					v.Win.ToggleMaximize()
+			windowButton(c, icons.Maximize, "最大化", func() {
+				if win != nil {
+					win.ToggleMaximize()
 				}
 			})
-			v.windowButton(c, icons.Close, "关闭", func() {
-				if v.Win != nil {
-					v.Win.Close()
+			windowButton(c, icons.Close, "关闭", func() {
+				if win != nil {
+					win.Close()
 				}
 			})
 		})
 }
 
-func (v *View) windowButton(c *ui.Context, icon *ui.SVG, label string, action func()) {
+func windowButton(c *ui.Context, icon *ui.SVG, label string, action func()) {
 	t := c.Theme()
 	var button ui.Element
 	button = ui.ButtonBase(c).Label(label).Size(38, 32).Radius(6).
@@ -112,11 +112,19 @@ func (v *View) windowButton(c *ui.Context, icon *ui.SVG, label string, action fu
 	button.OnClick(action)
 }
 
-func (v *View) headerButton(c *ui.Context, icon *ui.SVG, label string, action func()) {
+func headerButton(c *ui.Context, icon *ui.SVG, label string, action func()) {
 	t := c.Theme()
-	ui.ButtonBase(c).Label(label).Size(32, 32).Radius(6).
+	var button ui.Element
+	button = ui.ButtonBase(c).Label(label).Size(32, 32).Radius(6).
+		Cursor(ui.CursorPointer).
+		Tooltip(label).
+		Draw(func(p *ui.Painter, r ui.Rect) {
+			if button.Hovered() {
+				p.Fill(r, t.SurfaceHover, 6)
+			}
+		}).
 		Children(func() {
 			ui.Icon(c, icon).FontSize(17).TextColor(t.TextMuted)
-		}).
-		OnClick(action)
+		})
+	button.OnClick(action)
 }

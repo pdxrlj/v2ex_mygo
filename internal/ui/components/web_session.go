@@ -275,6 +275,7 @@ func (v *View) onWebLogin(cookie, proxy string) {
 	v.setWebNotice("登录成功，正在读取余额…", true)
 	go v.refreshWebBalance(proxy)
 	v.invalidate()
+	invalidateTopicWindow()
 }
 
 // clearWebSession signs the saved session out and deletes the site's cookies
@@ -299,6 +300,7 @@ func (v *View) clearWebSession() {
 	}()
 
 	v.invalidate()
+	invalidateTopicWindow()
 }
 
 // applyAutoSignIn saves the switch and runs today's check-in when it is

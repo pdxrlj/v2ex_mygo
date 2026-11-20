@@ -1,6 +1,7 @@
 package components
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -9,9 +10,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"mygo_demo/assets/img"
 	"mygo_demo/internal/api"
+	"mygo_demo/internal/database/repo"
+	"mygo_demo/internal/ui/components/icons"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -32,23 +36,27 @@ func OpenTopicWindow(v *View, topic api.TopicInfo) {
 	}
 
 	tw := &TopicWindow{
-		client:    v._client,
-		proxy:     v.ProxyURL,
-		owner:     v,
-		topicID:   topic.ID,
-		repliesMD: map[int]*markdown.Options{},
+		client:       v._client,
+		proxy:        v.ProxyURL,
+		owner:        v,
+		topicID:      topic.ID,
+		repliesMD:    map[int]*markdown.Options{},
+		splitPercent: loadTopicSplit(v.SettingsRepo),
 		// The body's pictures load through the app's proxy too.
 		body: markdown.Options{LoadImage: markdownImages(v.ProxyURL)},
 	}
 
 	tw.win = mygo.NewWindow(mygo.WindowOptions{
-		Title:           topic.Title,
-		Width:           760,
-		Height:          700,
-		MinWidth:        560,
-		MinHeight:       420,
-		BackgroundColor: "light-dark(#f5f6f8, #16181c)",
-		Content:         ui.View(tw.Draw),
+		Title:  topic.Title,
+		Width:  980,
+		Height: 760,
+
+		MinWidth:          820,
+		MinHeight:         520,
+		BackgroundColor:   "light-dark(#f5f6f8, #16181c)",
+		Content:           ui.View(tw.Draw),
+		TitleBarStyle:     mygo.TitleBarHidden,
+		HideWindowButtons: true,
 	})
 	topicWindow = tw.win
 	// Closing the window by hand drops the reference, so the next topic
@@ -57,6 +65,9 @@ func OpenTopicWindow(v *View, topic api.TopicInfo) {
 	tw.win.OnClosed(func() {
 		if topicWindow == tw.win {
 			topicWindow = nil
+		}
+		if tw.splitDirty {
+			tw.saveSplit()
 		}
 	})
 	if err := tw.win.SetIcon(img.LogoPNG); err != nil {
@@ -87,9 +98,33 @@ type TopicWindow struct {
 	loading  bool
 
 	// body holds the topic's Markdown; repliesMD holds one Options per
-	// reply id, so each keeps its parse between frames.
+	// reply id, so each keeps its parse between frames. bodyScroll and
+	// replyScroll keep where each pane stands while the other scrolls.
 	body      markdown.Options
 	repliesMD map[int]*markdown.Options
+
+	bodyScroll  ui.ScrollState
+	replyScroll ui.ScrollState
+
+	// replyDraft is the text the composer edits, on the UI thread.
+	replyDraft string
+	// replySending, replyNotice, replyNoticeOK and replySent are the
+	// composer's state, which mu guards while the post runs; pendingTopic is
+	// a reloaded topic waiting for the UI thread to take it.
+	replySending  bool
+	replyNotice   string
+	replyNoticeOK bool
+	replySent     bool
+	pendingTopic  *api.TopicInfo
+
+	// splitPercent is the topic pane's share of the width, which the divider
+	// moves; splitSaved throttles saving it while the user drags.
+	splitPercent float32
+	splitSaved   time.Time
+	splitDirty   bool
+	// splitDragging tracks a drag that began on the divider's handle, so the
+	// position is saved once the pointer is released.
+	splitDragging bool
 }
 
 func (t *TopicWindow) invalidate() {
@@ -108,27 +143,262 @@ func invalidateTopicWindow() {
 
 func (t *TopicWindow) Draw(c *ui.Context) {
 	t.load()
+	if pending := t.takePendingTopic(); pending != nil {
+		t.topic = pending
+	}
+	t.mu.Lock()
+	if t.replySent {
+		t.replyDraft = ""
+		t.replySent = false
+	}
+	t.mu.Unlock()
 
 	th := c.Theme()
-	// The whole page scrolls as one: a topic body can be longer than the
-	// window, and a body that held its size would push the replies out of
-	// sight.
-	ui.Scroll(c).Fill().Children(func() {
-		ui.Column(c).FillWidth().Padding(24).Gap(16).Children(func() {
-			switch {
-			case t.err != nil:
-				ui.Text(c, "加载主题失败："+t.err.Error()).
-					FontSize(13).TextColor(th.TextMuted)
-			case t.topic == nil:
-				ui.Text(c, "正在加载主题…").FontSize(13).TextColor(th.TextMuted)
-			default:
-				t.header(c)
-				ui.Box(c).FillWidth().Height(1).Background(th.Border.Alpha(0.25))
-				markdown.View(c, t.topic.Content, &t.body)
-				t.repliesSection(c)
-			}
-		})
+	ui.Column(c).Fill().Background(th.Surface).Children(func() {
+		t.nav(c)
+		// The same hairline the main window puts under its header.
+		ui.Box(c).FillWidth().Height(1).Background(th.Border.Alpha(0.2))
+
+		switch {
+		case t.err != nil:
+			ui.Text(c, "加载主题失败："+t.err.Error()).
+				FontSize(13).TextColor(th.TextMuted).Padding(24)
+		case t.topic == nil:
+			ui.Text(c, "正在加载主题…").
+				FontSize(13).TextColor(th.TextMuted).Padding(24)
+		default:
+			// Two panes the divider resizes: the topic on the left and its
+			// replies on the right. Each has a scroll of its own, so reading
+			// replies never moves the topic away.
+			// Grow, not Fill: the nav above already took its share, so the
+			// panes take what is left rather than the whole window's height.
+			ui.Column(c).FillWidth().Grow(1).Padding(24).Children(func() {
+				ui.Box(c).Fill().Children(func() {
+					split := ui.SplitPercent(c, &t.splitPercent,
+						func() {
+							ui.Column(c).FillHeight().Padding(0, 12, 0, 0).Gap(12).
+								Children(func() {
+									// The title and author stay in view while the
+									// body scrolls under the hairline.
+									t.header(c)
+									ui.Box(c).FillWidth().Height(1).
+										Background(th.Border.Alpha(0.25))
+
+									ui.Scroll(c).FillWidth().Grow(1).
+										TrackScroll(&t.bodyScroll).
+										Children(func() {
+											ui.Column(c).FillWidth().
+												Children(func() {
+													markdown.View(c, t.topic.Content, &t.body)
+												})
+										})
+
+									t.replyComposer(c)
+								})
+						},
+						func() {
+							ui.Column(c).FillHeight().Padding(0, 0, 0, 12).
+								Children(func() {
+									// The section's title stays put while the
+									// replies scroll under it.
+									t.repliesHeader(c)
+
+									ui.Scroll(c).FillWidth().Grow(1).
+										TrackScroll(&t.replyScroll).
+										Children(func() {
+											// Leave room between the reply text and
+											// the scroll bar, which the scroll draws
+											// on its own edge.
+											ui.Column(c).FillWidth().Padding(0, 16, 0, 0).
+												Children(func() {
+													t.repliesList(c)
+												})
+										})
+								})
+						},
+					).Fill()
+
+					if split.Changed() {
+						t.splitDirty = true
+						if time.Since(t.splitSaved) >= 300*time.Millisecond {
+							t.saveSplit()
+						}
+					}
+
+					t.splitHandle(c)
+				})
+			})
+		}
 	})
+}
+
+// topicNavHeight is the window's own title bar, which replaces the system's.
+const topicNavHeight = 52
+
+// nav draws the window's title bar, laid out as the main window's header:
+// the logo, where the topic sits, the theme toggle and the window controls.
+// The bar itself drags the window, as the system's title bar would.
+func (t *TopicWindow) nav(c *ui.Context) {
+	th := c.Theme()
+
+	ui.Row(c).FillWidth().Height(topicNavHeight).Padding(0, 16).Gap(10).
+		AlignItems(ui.Center).
+		Background(th.Surface).
+		DragWindow().
+		Children(func() {
+			ui.Image(c, img.Logo).Size(24, 24).Fit(ui.Contain)
+			ui.Text(c, "V2EX").FontSize(14).FontWeight(700).TextColor(th.Text)
+
+			ui.Row(c).Gap(6).AlignItems(ui.Center).MarginStart(12).
+				Children(func() {
+					ui.Text(c, "全部节点").FontSize(12).TextColor(th.TextMuted)
+					ui.Text(c, "›").FontSize(12).TextColor(th.TextMuted)
+					if t.topic != nil && t.topic.Node != nil &&
+						t.topic.Node.Title != "" {
+						ui.Text(c, t.topic.Node.Title).FontSize(12).
+							TextColor(th.TextMuted)
+						ui.Text(c, "›").FontSize(12).TextColor(th.TextMuted)
+					}
+					ui.Text(c, "主题详情").FontSize(12).FontWeight(600).
+						TextColor(th.Text)
+					if t.topic != nil {
+						ui.Text(c, "#"+strconv.Itoa(t.topic.ID)).
+							FontSize(12).TextColor(th.TextMuted)
+					}
+				})
+
+			ui.Spacer(c)
+
+			// The detail lives in a window of its own, so the way back to the
+			// main one raises it and leaves this window. The arrow matches the
+			// header's other icon buttons.
+			headerButton(c, icons.ArrowLeft, "返回主界面", func() {
+				if t.owner != nil && t.owner.Win != nil {
+					if t.owner.Win.IsMinimized() {
+						t.owner.Win.Restore()
+					}
+					t.owner.Win.Show()
+					t.owner.Win.Focus()
+				}
+				if t.win != nil {
+					t.win.Close()
+				}
+			})
+
+			headerButton(c, icons.Theme(mygo.Theme.IsDark()), "切换外观", func() {
+				if mygo.Theme.IsDark() {
+					mygo.Theme.SetSource(mygo.ThemeLight)
+				} else {
+					mygo.Theme.SetSource(mygo.ThemeDark)
+				}
+			})
+
+			windowControls(c, t.win)
+		})
+}
+
+// The divider defaults near the middle and stays wide enough on both sides
+// to keep the panes readable.
+const (
+	defaultTopicSplit = 55
+	minTopicSplit     = 20
+	maxTopicSplit     = 80
+)
+
+// loadTopicSplit reads the saved divider position, as the topic pane's
+// percentage of the width.
+func loadTopicSplit(settings *repo.Settings) float32 {
+	percent := float32(defaultTopicSplit)
+	if raw, ok, err := settings.Get(repo.TopicSplitKey); err == nil && ok {
+		if value, err := strconv.ParseFloat(raw, 32); err == nil {
+			percent = float32(value)
+		}
+	}
+	return min(max(percent, minTopicSplit), maxTopicSplit)
+}
+
+// saveSplit stores the divider position, throttled while a drag runs and
+// again as the window closes.
+func (t *TopicWindow) saveSplit() {
+	if t.owner == nil {
+		return
+	}
+	t.splitDirty = false
+	t.splitSaved = time.Now()
+	_ = t.owner.SettingsRepo.Set(repo.TopicSplitKey,
+		strconv.FormatFloat(float64(t.splitPercent), 'f', 1, 32))
+}
+
+// splitHandle draws the faint split-view grip on the divider, which brightens
+// under the pointer. The grip itself takes the drag, so the small area around
+// it resizes the panes like the line does.
+func (t *TopicWindow) splitHandle(c *ui.Context) {
+	width, height := c.Size()
+	// The grip sits over the split's box, which the window's nav, its
+	// hairline and the content padding leave inset from the window's size.
+	areaW := float32(width) - 48
+	areaH := float32(height) - topicNavHeight - 49
+	if areaW < 1 || areaH < 1 {
+		return
+	}
+
+	x := (areaW - 1) * t.splitPercent / 100
+	y := areaH / 2
+	th := c.Theme()
+
+	handle := ui.Box(c).Absolute().
+		Left(x-10).Top(y-28).
+		Size(20, 56).
+		Radius(10).
+		Center().
+		Cursor(ui.CursorResizeColumn).
+		Tooltip("拖动调整左右宽度")
+	dx, _, held := handle.Dragged()
+	hovered := handle.Hovered()
+
+	if held {
+		t.splitDragging = true
+		// Dragged reports the pointer's move since the last frame, so the
+		// percentage moves by that delta each frame, as the split's own
+		// handle does.
+		if dx != 0 && areaW > 1 {
+			percent := t.splitPercent + dx*100/(areaW-1)
+			percent = min(max(percent, minTopicSplit), maxTopicSplit)
+			if percent != t.splitPercent {
+				t.splitPercent = percent
+				t.splitDirty = true
+				if time.Since(t.splitSaved) >= 300*time.Millisecond {
+					t.saveSplit()
+				}
+			}
+		}
+	} else if t.splitDragging {
+		t.splitDragging = false
+		if t.splitDirty {
+			t.saveSplit()
+		}
+	}
+
+	if hovered || held {
+		handle.Background(th.Surface)
+	}
+	color := th.TextMuted.Alpha(0.35)
+	if hovered || held {
+		color = th.TextMuted.Alpha(0.85)
+	}
+	handle.Children(func() {
+		ui.Icon(c, icons.SplitView).FontSize(18).TextColor(color)
+	})
+}
+
+// takePendingTopic hands the topic a background reload made to the UI
+// thread, which owns t.topic.
+func (t *TopicWindow) takePendingTopic() *api.TopicInfo {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	pending := t.pendingTopic
+	t.pendingTopic = nil
+	return pending
 }
 
 // load fetches the topic and its first page of replies; the pages after are
@@ -196,15 +466,11 @@ func (t *TopicWindow) loadRemaining(pages int) {
 	}
 }
 
-// header shows where the topic lives, its title and who wrote it.
+// header shows the topic's title and who wrote it; where the topic lives is
+// in the window's nav above.
 func (t *TopicWindow) header(c *ui.Context) {
 	th := c.Theme()
 	topic := t.topic
-
-	node := "节点主题"
-	if topic.Node != nil && topic.Node.Title != "" {
-		node = topic.Node.Title + " / 节点主题"
-	}
 
 	author := "匿名用户"
 	avatarURL := ""
@@ -216,17 +482,7 @@ func (t *TopicWindow) header(c *ui.Context) {
 	}
 
 	ui.Column(c).FillWidth().Gap(8).Children(func() {
-		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
-			ui.Row(c).Gap(5).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, node).FontSize(11).TextColor(th.TextMuted)
-				ui.Text(c, "›").FontSize(11).TextColor(th.TextMuted)
-				ui.Text(c, "主题详情").FontSize(11).TextColor(th.Accent)
-			})
-			ui.Spacer(c)
-			ui.Text(c, "#"+strconv.Itoa(topic.ID)).FontSize(11).TextColor(th.TextMuted)
-		})
-
-		ui.Text(c, topic.Title).FontSize(24).FontWeight(700).TextColor(th.Text).MaxLines(2)
+		ui.Text(c, topic.Title).FontSize(24).FontWeight(700).TextColor(th.Text).MaxLines(3)
 
 		ui.Row(c).FillWidth().Gap(12).AlignItems(ui.Center).Children(func() {
 			ui.Avatar(c, author, avatarBitmap(t.proxy, avatarURL, t.invalidate)).Size(36, 36)
@@ -253,52 +509,241 @@ func (t *TopicWindow) header(c *ui.Context) {
 	})
 }
 
-// repliesSection fills the room under the body as part of the page's one
-// scroll, as a continuous thread instead of a stack of cards, so the list
-// reads like the post streams of Discourse and Flarum.
-func (t *TopicWindow) repliesSection(c *ui.Context) {
+// replyComposer draws the reply box at the bottom of the topic pane. It
+// posts through the site's form, so it asks for the web login until one is
+// saved.
+func (t *TopicWindow) replyComposer(c *ui.Context) {
+	if t.owner == nil || t.topic == nil {
+		return
+	}
+	th := c.Theme()
+	cookie, _, _, _, _ := t.owner.webSnapshot()
+
+	t.mu.Lock()
+	sending := t.replySending
+	notice := t.replyNotice
+	noticeOK := t.replyNoticeOK
+	t.mu.Unlock()
+
+	ui.Column(c).FillWidth().Padding(12).Radius(10).
+		Background(th.Surface).
+		Border(1, th.Border.Alpha(0.4)).
+		Gap(8).
+		Children(func() {
+			if cookie == "" {
+				ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+					ui.Text(c, "登录 V2EX 网页版后可以回复主题").
+						FontSize(11).TextColor(th.TextMuted).Grow(1)
+					ui.ButtonBase(c).Label("网页登录").
+						Padding(4, 8).Radius(6).
+						Background(th.Background).
+						Border(1, th.Border.Alpha(0.4)).
+						Children(func() {
+							ui.Text(c, "网页登录").FontSize(11).TextColor(th.Text)
+						}).
+						OnClick(func() {
+							proxy := t.owner.ProxyURL
+							OpenWebLoginWindow(func(cookie string) {
+								t.owner.onWebLogin(cookie, proxy)
+								invalidateTopicWindow()
+							})
+						})
+				})
+				return
+			}
+
+			ui.Text(c, "回复主题").FontSize(11).TextColor(th.TextMuted)
+			ui.TextArea(c, &t.replyDraft).
+				FontSize(12).
+				Height(64).
+				Padding(6, 8).
+				Placeholder("写下你的回复…").
+				Label("回复内容")
+			ui.Text(c, "评论不支持 Markdown；换行、链接、@ 和图片链接会正常显示。").
+				FontSize(10).TextColor(th.TextMuted)
+
+			ui.Row(c).FillWidth().AlignItems(ui.Center).Gap(8).Children(func() {
+				if notice != "" {
+					color := th.Accent
+					if !noticeOK {
+						color = th.Warning
+					}
+					ui.Text(c, notice).FontSize(11).TextColor(color).
+						Grow(1).MaxLines(2)
+				} else {
+					ui.Spacer(c)
+				}
+
+				label := "发表评论"
+				if sending {
+					label = "发送中…"
+				}
+				ui.ButtonBase(c).Label("发表评论").
+					Padding(4, 10).Radius(6).Background(th.Accent).
+					Children(func() {
+						ui.Text(c, label).FontSize(11).
+							TextColor(ui.Hex("#FFFFFF"))
+					}).
+					OnClick(func() {
+						t.submitReply()
+					})
+			})
+		})
+}
+
+// submitReply posts the draft through the web session and reloads the
+// replies on success.
+func (t *TopicWindow) submitReply() {
+	if t.owner == nil || t.topic == nil {
+		return
+	}
+	content := strings.TrimSpace(t.replyDraft)
+	if content == "" {
+		t.setReplyNotice("回复内容不能为空", false)
+		return
+	}
+	cookie, _, _, _, _ := t.owner.webSnapshot()
+	if cookie == "" {
+		t.setReplyNotice("请先完成网页登录", false)
+		return
+	}
+
+	t.mu.Lock()
+	if t.replySending {
+		t.mu.Unlock()
+		return
+	}
+	t.replySending = true
+	t.replyNotice = ""
+	t.mu.Unlock()
+
+	proxy := t.owner.ProxyURL
+	topicID := t.topic.ID
+	t.invalidate()
+
+	go func() {
+		session, err := api.NewWebSession(proxy, cookie)
+		if err == nil {
+			err = session.Reply(topicID, content)
+		}
+
+		t.mu.Lock()
+		t.replySending = false
+		if err != nil {
+			t.replyNotice = "评论失败：" + err.Error()
+			t.replyNoticeOK = false
+		} else {
+			t.replyNotice = "评论成功"
+			t.replyNoticeOK = true
+			t.replySent = true
+		}
+		t.mu.Unlock()
+
+		if errors.Is(err, api.ErrWebSignedOut) {
+			t.owner.forgetWebCookie()
+			t.setReplyNotice("登录已失效，请重新登录", false)
+			return
+		}
+		if err == nil {
+			t.reloadReplies()
+		}
+		t.invalidate()
+	}()
+}
+
+// setReplyNotice reports the composer's outcome.
+func (t *TopicWindow) setReplyNotice(msg string, ok bool) {
+	t.mu.Lock()
+	t.replyNotice = msg
+	t.replyNoticeOK = ok
+	t.mu.Unlock()
+	t.invalidate()
+}
+
+// reloadReplies rereads the topic and its replies after a post, so the new
+// one shows and the count moves.
+func (t *TopicWindow) reloadReplies() {
+	topic, err := api.NewTopic(t.client).Get(t.topicID)
+	if err != nil {
+		return
+	}
+	replies, pagination, err := api.NewTopic(t.client).Replies(t.topicID, 1)
+	if err != nil {
+		return
+	}
+
+	t.mu.Lock()
+	t.pendingTopic = topic
+	t.replies = replies
+	t.replyIDs = make(map[int]struct{}, len(replies))
+	for _, r := range replies {
+		t.replyIDs[r.ID] = struct{}{}
+	}
+	t.loading = pagination.Pages > 1
+	t.mu.Unlock()
+
+	if pagination.Pages > 1 {
+		go t.loadRemaining(pagination.Pages)
+	}
+	t.invalidate()
+}
+
+// repliesHeader is the panel's fixed heading: the reply count and how many
+// are loaded, over a hairline, so they stay in view while the replies
+// scroll under them.
+func (t *TopicWindow) repliesHeader(c *ui.Context) {
 	th := c.Theme()
 
 	t.mu.Lock()
-	replies := append([]api.ReplyInfo(nil), t.replies...)
+	loaded := len(t.replies)
 	loading := t.loading
 	t.mu.Unlock()
 
-	ui.Column(c).FillWidth().Gap(10).Children(func() {
+	ui.Column(c).FillWidth().Padding(0, 16, 10, 0).Gap(8).Children(func() {
 		ui.Row(c).FillWidth().AlignItems(ui.Center).Children(func() {
 			ui.Text(c, fmt.Sprintf("全部回复（%d）", t.topic.Replies)).
 				FontSize(14).FontWeight(600).TextColor(th.Text).Grow(1)
 			if loading {
-				ui.Text(c, fmt.Sprintf("加载中 %d/%d", len(replies), t.topic.Replies)).
+				ui.Text(c, fmt.Sprintf("加载中 %d/%d", loaded, t.topic.Replies)).
 					FontSize(11).TextColor(th.TextMuted)
 			} else {
-				ui.Text(c, fmt.Sprintf("已加载 %d 条", len(replies))).
+				ui.Text(c, fmt.Sprintf("已加载 %d 条", loaded)).
 					FontSize(11).TextColor(th.TextMuted)
 			}
 		})
 
 		ui.Box(c).FillWidth().Height(1).Background(th.Border.Alpha(0.2))
+	})
+}
 
-		if len(replies) == 0 {
-			ui.Text(c, "还没有回复。").FontSize(12).TextColor(th.TextMuted)
-			return
-		}
+// repliesList draws the replies as a continuous thread instead of a stack of
+// cards, so the list reads like the post streams of Discourse and Flarum.
+func (t *TopicWindow) repliesList(c *ui.Context) {
+	th := c.Theme()
 
-		ui.Column(c).FillWidth().Padding(0, 0, 8, 0).Children(func() {
-			nodes := threadReplies(replies)
-			roots := 0
-			for i := range nodes {
-				if nodes[i].parent >= 0 {
-					continue
-				}
-				if roots > 0 {
-					ui.Box(c).FillWidth().Height(1).
-						Background(th.Border.Alpha(0.2))
-				}
-				t.replyThread(c, nodes, i, 0, false)
-				roots++
+	t.mu.Lock()
+	replies := append([]api.ReplyInfo(nil), t.replies...)
+	t.mu.Unlock()
+
+	if len(replies) == 0 {
+		ui.Text(c, "还没有回复。").FontSize(12).TextColor(th.TextMuted)
+		return
+	}
+
+	ui.Column(c).FillWidth().Padding(0, 0, 8, 0).Children(func() {
+		nodes := threadReplies(replies)
+		roots := 0
+		for i := range nodes {
+			if nodes[i].parent >= 0 {
+				continue
 			}
-		})
+			if roots > 0 {
+				ui.Box(c).FillWidth().Height(1).
+					Background(th.Border.Alpha(0.2))
+			}
+			t.replyThread(c, nodes, i, 0, false)
+			roots++
+		}
 	})
 }
 
@@ -350,6 +795,15 @@ type replyNode struct {
 // maxReplyDepth is how many levels a nested conversation is indented; a
 // deeper answer keeps the last level's indent so the text stays readable.
 const maxReplyDepth = 3
+
+// maxReplyPictureHeight is the tallest a reply's picture shows in the pane.
+// A smaller picture keeps its own size; a taller one becomes a thumbnail,
+// which shows its original in the browser when clicked.
+const maxReplyPictureHeight = 260
+
+// maxReplyEmoticonHeight is the size an emoji or sticker shows at in a
+// reply: beside the words, not across the pane.
+const maxReplyEmoticonHeight = 28
 
 // threadReplies turns the flat reply list into conversations: each reply
 // joins the earlier reply it answers, so a parent is always drawn just
@@ -544,6 +998,30 @@ func isPictureAddress(link string) bool {
 	return false
 }
 
+// inlinePictureLink reports whether the link shares its line with words, as
+// an emoji used inside a sentence does, rather than standing alone as a
+// posted picture does.
+func inlinePictureLink(content string, link pictureLink) bool {
+	lineStart := strings.LastIndexByte(content[:link.start], '\n') + 1
+	lineEnd := len(content)
+	if i := strings.IndexByte(content[link.end:], '\n'); i >= 0 {
+		lineEnd = link.end + i
+	}
+	return strings.TrimSpace(content[lineStart:link.start]) != "" ||
+		strings.TrimSpace(content[link.end:lineEnd]) != ""
+}
+
+// squarePicture reports whether the picture is about as wide as it is high,
+// as emojis and stickers are and wide screenshots are not.
+func squarePicture(img ui.ImageSource) bool {
+	w, h := ui.ImageSize(img)
+	if h <= 0 {
+		return false
+	}
+	ratio := w / h
+	return ratio >= 0.7 && ratio <= 1.4
+}
+
 // replyContent draws a reply's text and the pictures it links to: a bare
 // picture address shows its picture below the text once it loads. While it
 // loads, or when it is not a picture after all, the address stays in the
@@ -560,7 +1038,30 @@ func (t *TopicWindow) replyContent(c *ui.Context, content string, md *markdown.O
 		if text := content[start:link.start]; strings.TrimSpace(text) != "" {
 			markdown.View(c, text, md)
 		}
-		ui.Image(c, img).MaxWidthPercent(100).Radius(8)
+		// A picture inside a sentence and about square is an emoji or a
+		// sticker: it belongs beside the words, at their size. A transparent
+		// one is the same even on a line of its own.
+		emoticon := emoticonPicture(link.url) ||
+			(inlinePictureLink(content, link) && squarePicture(img))
+		if emoticon {
+			ui.Image(c, img).Height(maxReplyEmoticonHeight).
+				AlignSelf(ui.Start).
+				Radius(4)
+		} else {
+			// A picture keeps its own size until it would be taller than the
+			// cap; a taller one becomes a thumbnail that opens its original
+			// on a click.
+			_, height := ui.ImageSize(img)
+			ui.Image(c, img).Height(min(height, maxReplyPictureHeight)).
+				MaxWidthPercent(100).
+				AlignSelf(ui.Start).
+				Radius(8).
+				Cursor(ui.CursorPointer).
+				Tooltip("点击查看原图").
+				OnClick(func() {
+					go mygo.Shell.OpenExternal(link.url)
+				})
+		}
 		start = link.end
 		drawn = true
 	}
