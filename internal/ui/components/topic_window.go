@@ -346,11 +346,14 @@ func (t *TopicWindow) splitHandle(c *ui.Context) {
 	y := areaH / 2
 	th := c.Theme()
 
+	// The grip paints over the divider's line, so the line does not run
+	// through its dots; the fill matches the pane behind it.
 	handle := ui.Box(c).Absolute().
 		Left(x-10).Top(y-28).
 		Size(20, 56).
 		Radius(10).
 		Center().
+		Background(th.Surface).
 		Cursor(ui.CursorResizeColumn).
 		Tooltip("拖动调整左右宽度")
 	dx, _, held := handle.Dragged()
@@ -380,7 +383,7 @@ func (t *TopicWindow) splitHandle(c *ui.Context) {
 	}
 
 	if hovered || held {
-		handle.Background(th.Surface)
+		handle.Background(th.SurfaceHover)
 	}
 	color := th.TextMuted.Alpha(0.35)
 	if hovered || held {

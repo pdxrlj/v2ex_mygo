@@ -41,9 +41,9 @@ var Bell = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewB
 // Refresh is a circular arrow, for reloading a listing from the network.
 var Refresh = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>`))
 
-// SplitView is two panes with arrows pointing both ways, for the divider
-// handle of the topic window.
-var SplitView = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 5V19M5 14L3 12L5 10M19 14L21 12L19 10M10 5V19"/></svg>`))
+// SplitView is a two-column grip of dots, for the divider handle of the
+// topic window.
+var SplitView = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M16 2a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/><path fill-rule="evenodd" clip-rule="evenodd" d="M16 10a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/><path fill-rule="evenodd" clip-rule="evenodd" d="M8 18a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/><path fill-rule="evenodd" clip-rule="evenodd" d="M16 18a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/><path fill-rule="evenodd" clip-rule="evenodd" d="M8 2a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/><path fill-rule="evenodd" clip-rule="evenodd" d="M8 10a2 2 0 1 1 0 4 2 2 0 0 1 0-4z"/></svg>`))
 
 // Info is a circled i, for notes and explanations.
 var Info = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>`))
